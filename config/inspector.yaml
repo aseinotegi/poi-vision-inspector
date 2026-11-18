@@ -1,0 +1,58 @@
+# poi-vision-inspector configuration.
+#
+#   provider  which multimodal model answers (local or cloud), swapped here, not in code
+#   profiles  what to look for and how to answer, per kind of object
+#   pois      where the robot stops: profile, plant tag, expected range, UNS path
+#
+# Prompts are written in English: local open models follow them more reliably.
+# Keys and topics use the plant's own names.
+
+provider:
+  kind: ollama                 # ollama | openai | gemini | replay
+  model: qwen3-vl              # any vision model pulled in Ollama
+  url: http://localhost:11434
+  think: false                 # answer directly, no reasoning trace (faster, plain JSON)
+  timeout_s: 120
+  retries: 2
+
+# Cloud alternative, same profiles and POIs:
+# provider:
+#   kind: gemini
+#   model: gemini-2.5-flash
+#   api_key_env: GEMINI_API_KEY
+
+profiles:
+  manometro:
+    kind: numeric
+    description: an analog pressure gauge (round dial with a needle and a printed scale)
+    instruction: |
+      You are an industrial inspector reading instruments from robot photos.
+      Find the pressure gauge in the photo and read where the needle tip points on the scale.
+      Read between the printed marks when the needle is between them, to one decimal.
+      If glare, blur, darkness or an obstacle hides the needle or the scale, do not guess.
+    reasons: [lectura_valida, no_legible, no_encontrado]
+    min_confidence: 0.8
+
+  # A second kind of inspection: only this block and its POI were added.
+  extintor:
+    kind: state
+    description: a portable fire extinguisher hanging on its wall bracket, under its sign
+    instruction: |
+      You are an industrial safety inspector checking fire extinguishers from robot photos.
+      Check that the extinguisher is on its bracket and that the needle of its small pressure
+      gauge is inside the green band. An empty bracket under the sign means it is missing.
+    values: [OK, NOK]
+    reasons: [correcto, ausente, presion_baja, no_legible]
+    min_confidence: 0.8
+
+pois:
+  PI-104:
+    profile: manometro
+    tag: PI-104
+    uns_topic: planta1/exterior/pi-104/presion
+    expect: { unit: bar, min: 0, max: 10, max_step: 3 }
+
+  EXT-12:
+    profile: extintor
+    tag: EXT-12
+    uns_topic: planta1/exterior/ext-12/estado

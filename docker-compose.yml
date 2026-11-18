@@ -1,0 +1,56 @@
+# Local inspection, nothing leaves the machine:
+#   docker compose up --build
+# A demo robot publishes photos of PI-104 and EXT-12; the inspector asks the local
+# model and publishes the results to MQTT. Watch them with:
+#   docker compose exec broker mosquitto_sub -t 'planta1/exterior/#' -v
+#
+# With an NVIDIA GPU, uncomment the `deploy` block of `ollama`: answers go from
+# tens of seconds to a few.
+
+services:
+  broker:
+    image: eclipse-mosquitto:2
+    command: ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
+    ports: ["1883:1883"]
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes: ["ollama:/root/.ollama"]
+    ports: ["11434:11434"]
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+
+  # Downloads the vision model once (several GB the first time).
+  model:
+    image: ollama/ollama:latest
+    depends_on: [ollama]
+    environment: { OLLAMA_HOST: "ollama:11434" }
+    entrypoint: ["sh", "-c", "sleep 3 && ollama pull ${POI_PROVIDER_MODEL:-qwen3-vl}"]
+    restart: "no"
+
+  inspector:
+    build: .
+    image: poi-vision-inspector:local
+    restart: unless-stopped
+    depends_on:
+      broker: { condition: service_started }
+      model: { condition: service_completed_successfully }
+    environment:
+      MQTT_HOST: broker
+      POI_PROVIDER_URL: http://ollama:11434
+      POI_PROVIDER_MODEL: ${POI_PROVIDER_MODEL:-qwen3-vl}
+    volumes:
+      - ./config/inspector.yaml:/app/config/inspector.yaml:ro
+
+  demo-robot:
+    image: poi-vision-inspector:local
+    depends_on: [inspector]
+    command: ["demo-robot"]
+    environment:
+      MQTT_HOST: broker
+      ROUND_S: "30"
+
+volumes:
+  ollama:
