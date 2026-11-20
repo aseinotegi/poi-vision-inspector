@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     ev = sub.add_parser("evaluate", help="measure the configured provider on a dataset")
     ev.add_argument("dataset", type=Path)
     ev.add_argument("--results", type=Path, help="per-photo CSV")
+    ev.add_argument("--report", type=Path, help="versioned JSON evaluation evidence")
     sub.add_parser("serve", help="run the MQTT inspection service")
     sub.add_parser("demo-robot", help="publish synthetic POI photos to MQTT (demo)")
     args = parser.parse_args(argv)
@@ -77,6 +78,11 @@ def main(argv: list[str] | None = None) -> int:
             cfg = inspector.config.provider
             print(f"\nProvider {cfg.kind} · model {cfg.model or '-'} · prompt {inspector.prompt_fingerprint}\n")
             print(report.markdown())
+            if args.report:
+                args.report.parent.mkdir(parents=True, exist_ok=True)
+                document = report.document(inspector, args.dataset)
+                args.report.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                print(f"\nEvaluation evidence saved to {args.report}")
         elif args.command == "demo-robot":
             from .demo_robot import main as demo_robot
 

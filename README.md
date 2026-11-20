@@ -151,8 +151,10 @@ Every result carries its **trace**: provider, model version as reported, a finge
 
 ```bash
 poi-inspect synth data/synthetic                   # 70 labelled photos, easy and hard
-poi-inspect evaluate data/synthetic --results results.csv
+poi-inspect evaluate data/synthetic --results results.csv --report evaluation.json
 ```
+
+The JSON records the date, provider and model, prompt fingerprint, dataset and per-image hashes, individual results, declared confidence and latency. It separates unique images, abstentions, failed calls and incorrect readings accepted as valid.
 
 The synthetic set has gauges at known values and extinguishers in known states, with tilt, blur, glare, darkness and noise. The report puts first the number that matters in a plant: **wrong but trusted**, readings marked `good` that are actually wrong, because those are the ones that would move a robot.
 

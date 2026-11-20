@@ -36,7 +36,25 @@ Answer only with the JSON requested:
 - status_reason: one of {reasons}.
 - confidence: from 0 to 1, how sure you are.
 - evidence: one short sentence on what you saw.
-If the object is not there, that is a finding: answer with the matching reason."""
+If the object is not there, that is a finding: answer with the matching reason.
+If you cannot assess the state, return value null and status_reason no_legible.
+OK must mean correcto; an adverse finding must be NOK."""
+
+GROUNDING = """
+Locate the object you inspected. Return bbox_2d as [left, top, right, bottom],
+coordinates normalized to 0..1000 relative to the WHOLE input image (x first, y second).
+If the target is absent or cannot be localized, return bbox_2d null. Never invent a box.
+The point-of-interest tag is supplied context, not evidence that you read a physical label.
+"""
+
+
+def box_schema() -> dict[str, Any]:
+    return {
+        "anyOf": [
+            {"type": "null"},
+            {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1000}, "minItems": 4, "maxItems": 4},
+        ]
+    }
 
 
 @dataclass(frozen=True)
@@ -54,8 +72,9 @@ def numeric_schema(profile: Profile) -> dict[str, Any]:
             "status_reason": {"type": "string", "enum": list(profile.reasons)},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "evidence": {"type": "string"},
+            "bbox_2d": box_schema(),
         },
-        "required": ["value", "unit", "status_reason", "confidence", "evidence"],
+        "required": ["value", "unit", "status_reason", "confidence", "evidence", "bbox_2d"],
         "additionalProperties": False,
     }
 
@@ -64,12 +83,13 @@ def state_schema(profile: Profile) -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
-            "value": {"type": "string", "enum": list(profile.values)},
+            "value": {"type": ["string", "null"], "enum": [*profile.values, None]},
             "status_reason": {"type": "string", "enum": list(profile.reasons)},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "evidence": {"type": "string"},
+            "bbox_2d": box_schema(),
         },
-        "required": ["value", "status_reason", "confidence", "evidence"],
+        "required": ["value", "status_reason", "confidence", "evidence", "bbox_2d"],
         "additionalProperties": False,
     }
 
@@ -87,7 +107,7 @@ def build_question(poi: Poi, profile: Profile) -> Question:
             max=f"{poi.expect.max:g}",
             reasons=reasons,
         )
-        return Question(text, numeric_schema(profile))
+        return Question(text + GROUNDING, numeric_schema(profile))
     text = STATE_TEMPLATE.format(
         instruction=profile.instruction.strip(),
         tag=poi.tag,
@@ -95,7 +115,7 @@ def build_question(poi: Poi, profile: Profile) -> Question:
         values=", ".join(profile.values),
         reasons=reasons,
     )
-    return Question(text, state_schema(profile))
+    return Question(text + GROUNDING, state_schema(profile))
 
 
 def fingerprint(config: Config) -> str:
@@ -107,7 +127,7 @@ def fingerprint(config: Config) -> str:
         {
             "profiles": {k: v.model_dump() for k, v in sorted(config.profiles.items())},
             "pois": {k: v.model_dump() for k, v in sorted(config.pois.items())},
-            "templates": [NUMERIC_TEMPLATE, STATE_TEMPLATE],
+            "templates": [NUMERIC_TEMPLATE, STATE_TEMPLATE, GROUNDING],
         },
         sort_keys=True,
     )

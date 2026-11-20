@@ -11,15 +11,22 @@ a robot. An honest ``uncertain`` costs a second photo; a confident mistake costs
 from __future__ import annotations
 
 import csv
+import hashlib
 import random
 import statistics
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from .inspector import GOOD, InspectionFailed, Inspector
 from .synth import EXTINGUISHER_STATES, Trouble, extinguisher_photo, gauge_photo
 
 TOLERANCE = 0.02  # a reading within 2 % of full scale counts as right
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 @dataclass
@@ -28,9 +35,17 @@ class Report:
     state: list[dict] = field(default_factory=list)
     failures: int = 0
     latencies: list[int] = field(default_factory=list)
+    detail: list[dict[str, Any]] = field(default_factory=list)
+    started_at: str = ""
+    finished_at: str = ""
 
     def summary(self) -> dict[str, float | int | None]:
-        out: dict[str, float | int | None] = {"failed_calls": self.failures}
+        out: dict[str, float | int | None] = {
+            "images": len(self.detail),
+            "unique_images": len({r["image_sha256"] for r in self.detail}),
+            "abstentions": sum(r["quality"] not in (GOOD, "failed") for r in self.detail),
+            "failed_calls": self.failures,
+        }
         if self.numeric:
             trusted = [r for r in self.numeric if r["quality"] == GOOD]
             errors = [abs(r["error_fs"]) for r in trusted]
@@ -55,8 +70,36 @@ class Report:
             out["latency_p95_ms"] = int(_p95(self.latencies))
         return out
 
+    def document(self, inspector: Inspector, dataset: Path) -> dict[str, Any]:
+        provider = inspector.config.provider
+        return {
+            "schema_version": 1,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "provider": {
+                "kind": provider.kind,
+                "model": provider.model,
+                "url": provider.url,
+                "timeout_s": provider.timeout_s,
+                "temperature": provider.temperature,
+                "retries": provider.retries,
+                "think": provider.think,
+                "reported_models": sorted({r.get("model") for r in self.detail if r.get("model")}),
+            },
+            "prompt_fingerprint": inspector.prompt_fingerprint,
+            "dataset": {
+                "path": str(dataset),
+                "labels_sha256": hashlib.sha256((dataset / "labels.csv").read_bytes()).hexdigest(),
+            },
+            "summary": self.summary(),
+            "images": self.detail,
+        }
+
     def markdown(self) -> str:
         labels = {
+            "images": "Evaluated images",
+            "unique_images": "Unique image contents",
+            "abstentions": "Readings not accepted as good",
             "gauges": "Gauge photos",
             "gauges_trusted_pct": "Trusted readings (%)",
             "gauge_mae_pct_fs": "Mean error, trusted (% of full scale)",
@@ -107,18 +150,27 @@ def make_synthetic_dataset(out: Path, gauges: int = 40, extinguishers: int = 30,
 
 
 def evaluate(inspector: Inspector, dataset: Path, results_csv: Path | None = None) -> Report:
-    report = Report()
-    detail = []
+    report = Report(started_at=_now())
     with (dataset / "labels.csv").open(encoding="utf-8") as f:
         labels = list(csv.DictReader(f))
     for row in labels:
         image = (dataset / row["file"]).read_bytes()
+        image_sha256 = hashlib.sha256(image).hexdigest()
         inspector.forget()  # independent photos: no "jump since last reading" check
         try:
             result = inspector.inspect(row["poi"], image)
-        except InspectionFailed:
+        except InspectionFailed as exc:
             report.failures += 1
-            detail.append({**row, "got": "", "quality": "failed", "checks": "no answer"})
+            report.detail.append(
+                {
+                    **row,
+                    "image_sha256": image_sha256,
+                    "got": "",
+                    "quality": "failed",
+                    "checks": "no answer",
+                    "error": str(exc),
+                }
+            )
             continue
         report.latencies.append(result.trace.get("latency_ms", 0))
         if result.kind == "numeric":
@@ -131,10 +183,24 @@ def evaluate(inspector: Inspector, dataset: Path, results_csv: Path | None = Non
         else:
             got = result.value if result.value != "NOK" else f"NOK:{result.status_reason}"
             report.state.append({"quality": result.quality, "got": got, "expected": row["expected"]})
-        detail.append({**row, "got": got, "quality": result.quality, "checks": "; ".join(result.checks)})
+        report.detail.append(
+            {
+                **row,
+                "image_sha256": image_sha256,
+                "got": got,
+                "quality": result.quality,
+                "confidence": result.confidence,
+                "status_reason": result.status_reason,
+                "checks": "; ".join(result.checks),
+                "model": result.trace.get("model"),
+                "provider": result.trace.get("provider"),
+                "latency_ms": result.trace.get("latency_ms"),
+            }
+        )
+    report.finished_at = _now()
     if results_csv:
         with results_csv.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=["file", "poi", "expected", "got", "quality", "checks"])
             writer.writeheader()
-            writer.writerows(detail)
+            writer.writerows({k: r.get(k, "") for k in writer.fieldnames} for r in report.detail)
     return report

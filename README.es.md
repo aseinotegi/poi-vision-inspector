@@ -153,8 +153,10 @@ Cada resultado lleva su **traza**: proveedor, versión del modelo según el prop
 
 ```bash
 poi-inspect synth data/synthetic                   # 70 fotos etiquetadas, fáciles y difíciles
-poi-inspect evaluate data/synthetic --results results.csv
+poi-inspect evaluate data/synthetic --results results.csv --report evaluacion.json
 ```
+
+El JSON guarda fecha, proveedor y modelo, huella del prompt, hash del dataset y de cada imagen, resultados individuales, confianza declarada y latencia. Separa imágenes únicas, abstenciones, llamadas fallidas y lecturas incorrectas aceptadas como válidas.
 
 El conjunto sintético tiene manómetros con valores conocidos y extintores en estados conocidos, con giro, desenfoque, reflejos, poca luz y ruido. El informe pone primero la cifra que importa en planta: **mal pero dadas por buenas**, lecturas marcadas `good` que en realidad están mal. Son las que moverían a un robot.
 

@@ -17,17 +17,19 @@ and a queue keeps the latency predictable instead of piling up requests.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
 import queue
 import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
-from .config import load_config
+from .config import Poi, load_config
 from .inspector import REJECTED, Inspection, InspectionFailed, Inspector
 from .prompt import build_question
 from .providers import make_provider
@@ -35,31 +37,61 @@ from .providers import make_provider
 log = logging.getLogger("inspector")
 
 
+def _iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return _iso(datetime.now(timezone.utc))
 
 
-def value_message(result: Inspection) -> dict[str, Any] | None:
+def parse_time(raw: Any) -> datetime:
+    if not isinstance(raw, str):
+        raise ValueError("capture timestamp must be an ISO-8601 string")
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(f"invalid capture timestamp '{raw}'") from None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _execution_id(poi_id: str, image_id: str, captured_at: str, received_at: str) -> str:
+    identity = "\0".join((poi_id, image_id, captured_at, received_at))
+    return hashlib.sha256(identity.encode()).hexdigest()[:24]
+
+
+def value_message(result: Inspection, timing: dict[str, Any]) -> dict[str, Any] | None:
     """The UNS message for the POI's value, or None if nothing should be published."""
     if result.value is None or result.quality == REJECTED:
         return None
     message = {
         "value": result.value,
-        "ts": now_iso(),
+        "ts": timing["captured_at"],
         "source": "inspector",
         "quality": result.quality,
         "status_reason": result.status_reason,
         "confidence": result.confidence,
         "model": result.trace.get("model"),
+        **timing,
     }
     if result.unit:
         message["unit"] = result.unit
     return message
 
 
-def inspection_message(result: Inspection, image_id: str) -> dict[str, Any]:
+def inspection_message(result: Inspection, image_id: str, timing: dict[str, Any]) -> dict[str, Any]:
     body = result.to_dict()
-    body.update({"value": result.value, "ts": now_iso(), "source": "inspector", "image": image_id})
+    body.update(
+        {
+            "value": result.value,
+            "ts": timing["processed_at"],
+            "source": "inspector",
+            "image": image_id,
+            **timing,
+        }
+    )
     return body
 
 
@@ -74,61 +106,189 @@ def load_image(photo: dict[str, Any], client: httpx.Client) -> tuple[bytes, str]
 
 
 class InspectionService:
-    def __init__(self, inspector: Inspector, publish, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        inspector: Inspector,
+        publish,
+        client: httpx.Client | None = None,
+        max_photo_age_s: float = 45.0,
+        clock: Callable[[], datetime] | None = None,
+        trial_prefix: str = "planta1/ensayos/vision",
+    ) -> None:
         self._inspector = inspector
         self._publish = publish  # (topic, payload dict, retain) -> None
         self._client = client or httpx.Client(timeout=15)
         self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=100)
+        self._max_photo_age_s = max_photo_age_s
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._trial_prefix = trial_prefix.rstrip("/")
 
-    def on_photo(self, payload: bytes | bytearray) -> None:
+    def _enqueue(self, payload: bytes | bytearray, trial: bool) -> None:
         try:
             photo = json.loads(payload)
         except ValueError:
             log.warning("ignoring a photo message that is not JSON")
             return
+        if not isinstance(photo, dict):
+            log.warning("ignoring a photo message that is not a JSON object")
+            return
         poi = photo.get("poi") or photo.get("point")
         if poi not in self._inspector.config.pois:
             log.debug("photo of %r: not a configured POI", poi)
             return
+        request = str(photo.get("request") or "")
+        if trial and not request:
+            log.warning("ignoring a vision trial without a request id")
+            return
+        received_at = _iso(self._clock())
+        item = {**photo, "poi": poi, "received_at": received_at, "trial": trial}
         try:
-            self._queue.put_nowait({**photo, "poi": poi})
+            self._queue.put_nowait(item)
         except queue.Full:
             log.warning("inspection queue full, dropping photo %s", photo.get("value"))
+            if trial:
+                self._publish(
+                    f"{self._trial_prefix}/resultado",
+                    {
+                        "value": None,
+                        "state": "error",
+                        "quality": "error",
+                        "status_reason": "cola_llena",
+                        "error": "inspection queue full",
+                        "request": request,
+                        "mode": "ensayo",
+                        "poi": poi,
+                        "image": str(photo.get("value", "")),
+                        "ts": received_at,
+                        "source": "inspector",
+                    },
+                    False,
+                )
+                return
+        if trial:
+            self._publish(
+                f"{self._trial_prefix}/estado",
+                {
+                    "value": "en-cola",
+                    "state": "en-cola",
+                    "request": request,
+                    "mode": "ensayo",
+                    "poi": poi,
+                    "image": str(photo.get("value", "")),
+                    "ts": received_at,
+                    "source": "inspector",
+                },
+                False,
+            )
+
+    def on_photo(self, payload: bytes | bytearray) -> None:
+        self._enqueue(payload, trial=False)
+
+    def on_trial(self, payload: bytes | bytearray) -> None:
+        self._enqueue(payload, trial=True)
+
+    def _failure(self, poi_id: str, poi: Poi, context: dict[str, Any], error: str, quality: str = "error") -> None:
+        reason = "captura_caducada" if quality == "stale" else "error_inspeccion"
+        trial = context.get("mode") == "ensayo"
+        topic = f"{self._trial_prefix}/resultado" if trial else f"{poi.uns_topic}/inspeccion"
+        body = {
+            "poi": poi_id,
+            "tag": poi.tag,
+            "kind": self._inspector.config.profiles[poi.profile].kind,
+            "value": None,
+            "ts": context["processed_at"],
+            "source": "inspector",
+            "quality": quality,
+            "status_reason": reason,
+            "checks": [error],
+            "error": error[:300],
+            **context,
+        }
+        if trial:
+            body["state"] = "error"
+        self._publish(topic, body, not trial)
 
     def handle(self, photo: dict[str, Any]) -> None:
         poi_id = photo["poi"]
         poi = self._inspector.config.pois[poi_id]
         image_id = str(photo.get("value", ""))
+        trial = photo.get("trial") is True
+        processed_at = _iso(self._clock())
+        received_at = str(photo.get("received_at") or processed_at)
+        captured_at = str(photo.get("captured_at") or photo.get("ts") or received_at)
+        context: dict[str, Any] = {
+            "inspection_id": _execution_id(poi_id, image_id, captured_at, received_at),
+            "image": image_id,
+            "captured_at": captured_at,
+            "received_at": received_at,
+            "processed_at": processed_at,
+        }
+        if photo.get("image_file"):
+            context["image_file"] = str(photo["image_file"])
+        if trial:
+            context.update({"request": str(photo["request"]), "mode": "ensayo"})
         try:
+            captured = parse_time(captured_at)
+            received = parse_time(received_at)
+            processed = parse_time(processed_at)
+            age_s = (processed - captured).total_seconds()
+            if age_s < -5:
+                raise ValueError("capture timestamp is more than 5 seconds in the future")
+            context.update(
+                {
+                    "captured_at": _iso(captured),
+                    "received_at": _iso(received),
+                    "queue_wait_ms": max(0, round((processed - received).total_seconds() * 1000)),
+                    "capture_age_ms": max(0, round(age_s * 1000)),
+                }
+            )
+            if self._max_photo_age_s > 0 and age_s > self._max_photo_age_s:
+                self._failure(
+                    poi_id, poi, context, f"stale capture: {age_s:.1f}s old, limit {self._max_photo_age_s:g}s", "stale"
+                )
+                log.warning("%s %s: discarded stale capture (%.1fs old)", poi_id, image_id, age_s)
+                return
+            if trial:
+                self._publish(
+                    f"{self._trial_prefix}/estado",
+                    {
+                        "value": "analizando",
+                        "state": "analizando",
+                        "request": context["request"],
+                        "mode": "ensayo",
+                        "poi": poi_id,
+                        "image": image_id,
+                        "inspection_id": context["inspection_id"],
+                        "ts": processed_at,
+                        "source": "inspector",
+                    },
+                    False,
+                )
             image, mime = load_image(photo, self._client)
             result = self._inspector.inspect(poi_id, image, mime)
         except (InspectionFailed, httpx.HTTPError, ValueError) as exc:
             log.error("%s %s: no inspection (%s)", poi_id, image_id, exc)
-            self._publish(
-                f"{poi.uns_topic}/inspeccion",
-                {
-                    "value": None,
-                    "ts": now_iso(),
-                    "source": "inspector",
-                    "quality": "error",
-                    "image": image_id,
-                    "error": str(exc)[:300],
-                },
-                True,
-            )
+            self._failure(poi_id, poi, context, str(exc))
             return
-        self._publish(f"{poi.uns_topic}/inspeccion", inspection_message(result, image_id), True)
-        message = value_message(result)
-        if message:
-            self._publish(poi.uns_topic, message, True)
+        result.trace.update(context)
+        body = inspection_message(result, image_id, context)
+        if trial:
+            body["state"] = "completada"
+            self._publish(f"{self._trial_prefix}/resultado", body, False)
+        else:
+            self._publish(f"{poi.uns_topic}/inspeccion", body, True)
+            message = value_message(result, context)
+            if message:
+                self._publish(poi.uns_topic, message, True)
         log.info(
-            "%s %s → %s %s (%s, %s ms)",
+            "%s %s → %s %s (%s, %s ms%s)",
             poi_id,
             image_id,
             result.value,
             result.unit or "",
             result.quality,
             result.trace.get("latency_ms"),
+            ", trial" if trial else "",
         )
 
     def run(self, stop: threading.Event) -> None:
@@ -164,6 +324,8 @@ def describe(config, inspector: Inspector) -> dict[str, Any]:
         "model": config.provider.model or config.provider.kind,
         "temperature": config.provider.temperature,
         "retries": config.provider.retries,
+        "timeout_s": config.provider.timeout_s,
+        "think": config.provider.think,
         "profiles": {k: {"kind": v.kind, "description": v.description} for k, v in sorted(config.profiles.items())},
         "pois": pois,
     }
@@ -186,13 +348,19 @@ def main(config_path: str) -> int:
     def publish(topic: str, payload: dict[str, Any], retain: bool) -> None:
         client.publish(topic, json.dumps(payload, ensure_ascii=False, separators=(",", ":")), qos=1, retain=retain)
 
-    service = InspectionService(inspector, publish)
+    trial_prefix = os.environ.get("TRIAL_TOPIC", "planta1/ensayos/vision").rstrip("/")
+    service = InspectionService(
+        inspector,
+        publish,
+        max_photo_age_s=float(os.environ.get("MAX_PHOTO_AGE_S", "45")),
+        trial_prefix=trial_prefix,
+    )
 
     def on_connect(c, userdata, flags, reason_code, properties) -> None:
         if reason_code.is_failure:
             log.error("broker refused the connection: %s", reason_code)
             return
-        c.subscribe(photo_topic, qos=1)
+        c.subscribe([(photo_topic, 1), (f"{trial_prefix}/foto", 1)])
         status = {"value": "online", "source": "inspector", "model": f"{config.provider.kind}/{config.provider.model}"}
         c.publish(status_topic, json.dumps(status), qos=1, retain=True)
         # What it asks and how, retained: anyone on the UNS can see the exact prompts.
@@ -201,7 +369,16 @@ def main(config_path: str) -> int:
         log.info("listening on %s, %d POIs, provider %s", photo_topic, len(config.pois), config.provider.kind)
 
     client.on_connect = on_connect
-    client.on_message = lambda c, u, msg: None if msg.retain else service.on_photo(msg.payload)
+
+    def on_message(c, u, msg) -> None:
+        if msg.retain:
+            return
+        if msg.topic == f"{trial_prefix}/foto":
+            service.on_trial(msg.payload)
+        else:
+            service.on_photo(msg.payload)
+
+    client.on_message = on_message
     if os.environ.get("MQTT_USERNAME"):  # a broker with users and ACLs
         client.username_pw_set(os.environ["MQTT_USERNAME"], os.environ.get("MQTT_PASSWORD"))
     client.connect_async(os.environ.get("MQTT_HOST", "localhost"), int(os.environ.get("MQTT_PORT", "1883")))

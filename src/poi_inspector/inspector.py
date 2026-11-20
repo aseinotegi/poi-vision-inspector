@@ -17,10 +17,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+from jsonschema import Draft202012Validator
 
 from .config import Config, Poi, Profile
 from .prompt import build_question, fingerprint
@@ -45,6 +48,8 @@ class Inspection:
     quality: str  # good | uncertain | rejected
     checks: list[str] = field(default_factory=list)  # why it is not "good"
     trace: dict[str, Any] = field(default_factory=dict)
+    bbox_2d: list[float] | None = None
+    bbox_source: str | None = None  # model | replay | annotated; never inferred from coordinates alone
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -83,12 +88,17 @@ class Inspector:
             "provider": self.provider.name,
             "model": answer.model,
             "prompt": self.prompt_fingerprint,
-            "image_sha256": hashlib.sha256(image).hexdigest()[:16],
+            "image_sha256": hashlib.sha256(image).hexdigest(),
             "latency_ms": answer.latency_ms,
-            "raw": answer.text[:2000],  # what the model answered, before any check
+            "raw": answer.text,
+            "instruction": question.instruction,
+            "schema": question.schema,
+            "temperature": self.config.provider.temperature,
         }
         inspection = self._judge(poi_id, poi, profile, answer.text)
         inspection.trace = trace
+        if inspection.bbox_2d is not None:
+            inspection.bbox_source = "replay" if self.provider.name == "replay" else "model"
         if inspection.quality == GOOD and profile.kind == "numeric":
             self._last_good[poi_id] = float(inspection.value)
         return inspection
@@ -113,9 +123,23 @@ class Inspector:
     def _judge(self, poi_id: str, poi: Poi, profile: Profile, text: str) -> Inspection:
         base: dict[str, Any] = {"poi": poi_id, "tag": poi.tag, "kind": profile.kind}
         try:
-            data = json.loads(text)
+            data = json.loads(text, parse_constant=lambda v: (_ for _ in ()).throw(ValueError(v)))
             if not isinstance(data, dict):
                 raise ValueError("not an object")
+            # Old recorded answers have no localization. Null never implies a predicted box.
+            data.setdefault("bbox_2d", None)
+            errors = list(Draft202012Validator(build_question(poi, profile).schema).iter_errors(data))
+            if errors:
+                return Inspection(
+                    **base,
+                    value=None,
+                    unit=None,
+                    status_reason="respuesta_invalida",
+                    confidence=None,
+                    evidence="",
+                    quality=REJECTED,
+                    checks=[f"schema: {e.message}" for e in errors[:5]],
+                )
         except ValueError:
             return Inspection(
                 **base,
@@ -132,6 +156,12 @@ class Inspector:
         confidence = _as_float(data.get("confidence"))
         evidence = str(data.get("evidence") or "")[:300]
         checks: list[str] = []
+        box = data.get("bbox_2d")
+        if box and not (box[0] < box[2] and box[1] < box[3]):
+            checks.append("invalid bounding box: inverted or empty coordinates")
+            box = None
+        if not evidence.strip():
+            checks.append("missing visual evidence")
 
         if reason not in profile.reasons:
             checks.append(f"reason '{reason}' is not in the profile")
@@ -142,7 +172,21 @@ class Inspector:
             checks.append(f"model confidence {confidence:.2f} below {profile.min_confidence:.2f}")
 
         if profile.kind == "state":
+            if data.get("value") is None or reason == "no_legible":
+                return Inspection(
+                    **base,
+                    value=None,
+                    unit=None,
+                    status_reason=reason,
+                    confidence=confidence,
+                    evidence=evidence,
+                    quality=UNCERTAIN,
+                    checks=checks + ([] if data.get("value") is None else ["a state with reason 'no_legible'"]),
+                    bbox_2d=box,
+                )
             value = str(data.get("value", "")).strip().upper()
+            if (value == "OK" and reason != "correcto") or (value == "NOK" and reason == "correcto"):
+                checks.append("state and reason contradict each other")
             if value not in profile.values:
                 return Inspection(
                     **base,
@@ -163,9 +207,12 @@ class Inspector:
                 evidence=evidence,
                 quality=UNCERTAIN if checks else GOOD,
                 checks=checks,
+                bbox_2d=box,
             )
 
-        return self._judge_number(base, poi, reason, confidence, evidence, data, checks)
+        result = self._judge_number(base, poi, reason, confidence, evidence, data, checks)
+        result.bbox_2d = box
+        return result
 
     def _judge_number(
         self,
@@ -199,7 +246,9 @@ class Inspector:
 
         if reason != "lectura_valida":
             checks.append(f"a value with reason '{reason}'")
-        if unit and not _same_unit(str(unit), expect.unit):
+        if not unit:
+            checks.append("missing unit")
+        elif not _same_unit(str(unit), expect.unit):
             checks.append(f"unit '{unit}' instead of '{expect.unit}'")
         margin = 0.05 * (expect.max - expect.min)
         if not expect.min - margin <= value <= expect.max + margin:
@@ -233,7 +282,8 @@ def _as_float(raw: Any) -> float | None:
     if isinstance(raw, bool) or raw is None:
         return None
     try:
-        return float(raw)
+        value = float(raw)
+        return value if math.isfinite(value) else None
     except (TypeError, ValueError):
         return None
 

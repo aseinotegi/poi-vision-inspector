@@ -53,11 +53,16 @@ class Oracle:
                 "unit": "bar",
                 "status_reason": "lectura_valida",
                 "confidence": 0.95,
-                "evidence": "",
+                "evidence": "needle position visible",
             }
         else:
             state, _, reason = expected.partition(":")
-            body = {"value": state, "status_reason": reason or "correcto", "confidence": 0.95, "evidence": ""}
+            body = {
+                "value": state,
+                "status_reason": reason or "correcto",
+                "confidence": 0.95,
+                "evidence": "extinguisher state visible",
+            }
         return Answer(json.dumps(body), "oracle", 10)
 
 
@@ -74,3 +79,9 @@ def test_evaluation_counts_confident_mistakes(tmp_path, config):
     assert summary["state_accuracy_pct"] == 100.0 and summary["states_wrong_but_trusted"] == 0
     assert "Wrong but trusted" in report.markdown()
     assert (tmp_path / "results.csv").read_text().count("\n") == 9
+    document = report.document(inspector, tmp_path)
+    assert document["summary"]["images"] == 8 and document["summary"]["unique_images"] == 8
+    assert document["prompt_fingerprint"] == inspector.prompt_fingerprint
+    assert document["provider"]["reported_models"] == ["oracle"]
+    assert len(document["images"]) == 8 and all(len(r["image_sha256"]) == 64 for r in document["images"])
+    assert json.loads(json.dumps(document))["summary"]["gauges_wrong_but_trusted"] == 1
