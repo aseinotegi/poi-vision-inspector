@@ -10,11 +10,19 @@ from .base import RETRYABLE_STATUS, Answer, ProviderError, api_key
 
 
 def _gemini_schema(node: Any) -> Any:
-    """Gemini's schema dialect: nullable types use ``nullable``, no ``additionalProperties``."""
+    """Gemini's schema dialect: there is no ``null`` type, a nullable field says
+    ``nullable``; no ``additionalProperties``."""
     if isinstance(node, list):
         return [_gemini_schema(item) for item in node]
     if not isinstance(node, dict):
         return node
+    # {"anyOf": [{"type": "null"}, X]} is X, nullable.
+    options = node.get("anyOf")
+    if isinstance(options, list) and {"type": "null"} in options:
+        rest = [o for o in options if o != {"type": "null"}]
+        if len(rest) == 1 and isinstance(rest[0], dict):
+            merged = {**{k: v for k, v in node.items() if k != "anyOf"}, **rest[0]}
+            return {**_gemini_schema(merged), "nullable": True}
     out: dict[str, Any] = {}
     for key, value in node.items():
         if key == "additionalProperties":
@@ -23,6 +31,8 @@ def _gemini_schema(node: Any) -> Any:
             out["type"] = next(t for t in value if t != "null")
             if "null" in value:
                 out["nullable"] = True
+        elif key == "enum" and isinstance(value, list):
+            out[key] = [v for v in value if v is not None]  # null is said by nullable
         elif key == "properties":
             out[key] = {name: _gemini_schema(sub) for name, sub in value.items()}
         else:

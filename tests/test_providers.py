@@ -93,6 +93,20 @@ def test_gemini_schema_dialect():
     assert converted["properties"]["status_reason"]["enum"] == ["a"]
 
 
+def test_gemini_schema_has_no_null_type_for_the_real_questions():
+    state = {"type": ["string", "null"], "enum": ["OK", "NOK", None]}
+    assert _gemini_schema(state) == {"type": "string", "nullable": True, "enum": ["OK", "NOK"]}
+    box = {"anyOf": [{"type": "null"}, {"type": "array", "items": {"type": "number"}, "minItems": 4}]}
+    assert _gemini_schema(box) == {"type": "array", "items": {"type": "number"}, "minItems": 4, "nullable": True}
+    # Nothing in the converted question schemas still says "null".
+    from poi_inspector.config import Expect, Poi, Profile
+    from poi_inspector.prompt import build_question
+
+    numeric = Profile(kind="numeric", description="d", instruction="i", reasons=["lectura_valida"])
+    poi = Poi(tag="PI-1", profile="m", uns_topic="a/b", expect=Expect(unit="bar", min=0, max=10))
+    assert '"null"' not in json.dumps(_gemini_schema(build_question(poi, numeric).schema))
+
+
 def test_gemini_needs_its_key(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(ProviderError, match="GEMINI_API_KEY"):
