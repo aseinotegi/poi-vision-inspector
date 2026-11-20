@@ -159,6 +159,9 @@ def main(config_path: str) -> int:
     service = InspectionService(inspector, publish)
 
     def on_connect(c, userdata, flags, reason_code, properties) -> None:
+        if reason_code.is_failure:
+            log.error("broker refused the connection: %s", reason_code)
+            return
         c.subscribe(photo_topic, qos=1)
         status = {"value": "online", "source": "inspector", "model": f"{config.provider.kind}/{config.provider.model}"}
         c.publish(status_topic, json.dumps(status), qos=1, retain=True)
@@ -166,6 +169,8 @@ def main(config_path: str) -> int:
 
     client.on_connect = on_connect
     client.on_message = lambda c, u, msg: None if msg.retain else service.on_photo(msg.payload)
+    if os.environ.get("MQTT_USERNAME"):  # a broker with users and ACLs
+        client.username_pw_set(os.environ["MQTT_USERNAME"], os.environ.get("MQTT_PASSWORD"))
     client.connect_async(os.environ.get("MQTT_HOST", "localhost"), int(os.environ.get("MQTT_PORT", "1883")))
     client.loop_start()
 

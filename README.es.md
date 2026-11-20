@@ -130,7 +130,7 @@ pois:
 | `gemini` | nube de Google | `pip install ".[gemini]"`; la clave va en la variable que indica `api_key_env` |
 | `replay` | ningún sitio | Respuestas grabadas por hash de imagen: tests, CI y demos sin conexión |
 
-Dónde corre el modelo también puede venir del entorno (`POI_PROVIDER_URL`, `POI_PROVIDER_MODEL`), así que el mismo YAML vale en un portátil y en planta.
+Dónde corre el modelo también puede venir del entorno (`POI_PROVIDER_URL`, `POI_PROVIDER_MODEL`), así que el mismo YAML vale en un portátil y en planta. El servicio MQTT lee `MQTT_HOST`, `MQTT_PORT` y, para un broker con usuarios y ACL, `MQTT_USERNAME` y `MQTT_PASSWORD`.
 
 ## Cuánto fiarse de una respuesta
 

@@ -128,7 +128,7 @@ pois:
 | `gemini` | Google cloud | `pip install ".[gemini]"`, key in the variable named by `api_key_env` |
 | `replay` | nowhere | recorded answers by image hash: tests, CI, offline demos |
 
-Where the model runs can also come from the environment (`POI_PROVIDER_URL`, `POI_PROVIDER_MODEL`), so the same YAML works on a laptop and in a plant.
+Where the model runs can also come from the environment (`POI_PROVIDER_URL`, `POI_PROVIDER_MODEL`), so the same YAML works on a laptop and in a plant. The MQTT service reads `MQTT_HOST`, `MQTT_PORT` and, for a broker with users and ACLs, `MQTT_USERNAME` and `MQTT_PASSWORD`.
 
 ## How much to trust an answer
 
