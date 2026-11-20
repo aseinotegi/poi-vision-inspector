@@ -85,6 +85,7 @@ class Inspector:
             "prompt": self.prompt_fingerprint,
             "image_sha256": hashlib.sha256(image).hexdigest()[:16],
             "latency_ms": answer.latency_ms,
+            "raw": answer.text[:2000],  # what the model answered, before any check
         }
         inspection = self._judge(poi_id, poi, profile, answer.text)
         inspection.trace = trace

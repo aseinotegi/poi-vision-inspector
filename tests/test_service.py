@@ -5,7 +5,7 @@ import httpx
 
 from poi_inspector.inspector import Inspector
 from poi_inspector.providers import ProviderError
-from poi_inspector.service import InspectionService
+from poi_inspector.service import InspectionService, describe
 
 IMG = b"\xff\xd8 photo"
 
@@ -98,3 +98,14 @@ def test_demo_robot_alternates_both_pois_with_inline_photos():
     second, _ = next_photo(rng, 1)
     assert (first["poi"], second["poi"]) == ("PI-104", "EXT-12")
     assert base64.b64decode(first["image_b64"])[:2] == b"\xff\xd8" and "bar" in truth
+
+
+def test_the_configuration_is_published_with_the_exact_prompts_and_no_secrets(config, scripted):
+    inspector = Inspector(config, scripted)
+    body = describe(config, inspector)
+    assert body["value"] == inspector.prompt_fingerprint
+    poi = next(iter(body["pois"].values()))
+    assert "Answer only with the JSON requested" in poi["prompt"]
+    assert poi["schema"]["type"] == "object"
+    text = json.dumps(body)
+    assert "api_key" not in text and "http" not in text

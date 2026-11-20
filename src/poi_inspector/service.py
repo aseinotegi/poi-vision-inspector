@@ -29,6 +29,7 @@ import httpx
 
 from .config import load_config
 from .inspector import REJECTED, Inspection, InspectionFailed, Inspector
+from .prompt import build_question
 from .providers import make_provider
 
 log = logging.getLogger("inspector")
@@ -139,6 +140,35 @@ class InspectionService:
             self.handle(photo)
 
 
+def describe(config, inspector: Inspector) -> dict[str, Any]:
+    """The inspector's configuration as a UNS message: model, and for every point of
+    interest the exact prompt and JSON schema the model gets. No secrets: no keys, no URLs."""
+    pois = {}
+    for poi_id, poi in sorted(config.pois.items()):
+        profile = config.profiles[poi.profile]
+        question = build_question(poi, profile)
+        pois[poi_id] = {
+            "profile": poi.profile,
+            "kind": profile.kind,
+            "tag": poi.tag,
+            "uns_topic": poi.uns_topic,
+            "expect": poi.expect.model_dump() if poi.expect else None,
+            "min_confidence": profile.min_confidence,
+            "prompt": question.instruction,
+            "schema": question.schema,
+        }
+    return {
+        "value": inspector.prompt_fingerprint,
+        "source": "inspector",
+        "provider": config.provider.kind,
+        "model": config.provider.model or config.provider.kind,
+        "temperature": config.provider.temperature,
+        "retries": config.provider.retries,
+        "profiles": {k: {"kind": v.kind, "description": v.description} for k, v in sorted(config.profiles.items())},
+        "pois": pois,
+    }
+
+
 def main(config_path: str) -> int:
     import signal
 
@@ -165,6 +195,9 @@ def main(config_path: str) -> int:
         c.subscribe(photo_topic, qos=1)
         status = {"value": "online", "source": "inspector", "model": f"{config.provider.kind}/{config.provider.model}"}
         c.publish(status_topic, json.dumps(status), qos=1, retain=True)
+        # What it asks and how, retained: anyone on the UNS can see the exact prompts.
+        described = json.dumps(describe(config, inspector), ensure_ascii=False)
+        c.publish(f"{status_topic}/config", described, qos=1, retain=True)
         log.info("listening on %s, %d POIs, provider %s", photo_topic, len(config.pois), config.provider.kind)
 
     client.on_connect = on_connect
