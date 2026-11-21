@@ -95,6 +95,7 @@ pois:
     tag: PI-104
     uns_topic: planta1/exterior/pi-104/presion
     expect: { unit: bar, min: 0, max: 10, max_step: 3 }
+    hint: the larger gauge, on the right   # optional: which one, when the photo shows several
 ```
 
 ### Adding a new case: the extinguisher

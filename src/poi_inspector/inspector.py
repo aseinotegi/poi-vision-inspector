@@ -50,6 +50,7 @@ class Inspection:
     trace: dict[str, Any] = field(default_factory=dict)
     bbox_2d: list[float] | None = None
     bbox_source: str | None = None  # model | replay | annotated; never inferred from coordinates alone
+    other_boxes: list[list[float]] = field(default_factory=list)  # same kind, seen but not inspected
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -97,6 +98,7 @@ class Inspector:
         }
         inspection = self._judge(poi_id, poi, profile, answer.text)
         inspection.trace = trace
+        inspection.other_boxes = _other_boxes(answer.text, inspection.bbox_2d)
         if inspection.bbox_2d is not None:
             inspection.bbox_source = "replay" if self.provider.name == "replay" else "model"
         if inspection.quality == GOOD and profile.kind == "numeric":
@@ -128,6 +130,7 @@ class Inspector:
                 raise ValueError("not an object")
             # Old recorded answers have no localization. Null never implies a predicted box.
             data.setdefault("bbox_2d", None)
+            data.setdefault("other_boxes", [])
             errors = list(Draft202012Validator(build_question(poi, profile).schema).iter_errors(data))
             if errors:
                 return Inspection(
@@ -276,6 +279,30 @@ class Inspector:
             quality=UNCERTAIN if checks else GOOD,
             checks=checks,
         )
+
+
+def _other_boxes(text: str, box: list[float] | None) -> list[list[float]]:
+    """The other objects of the same kind the model saw, when it also located the inspected one."""
+    if box is None:
+        return []
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    others = data.get("other_boxes") if isinstance(data, dict) else None
+    if not isinstance(others, list):
+        return []
+    valid = [
+        o
+        for o in others
+        if isinstance(o, list)
+        and len(o) == 4
+        and all(isinstance(v, int | float) and 0 <= v <= 1000 for v in o)
+        and o[0] < o[2]
+        and o[1] < o[3]
+        and o != box
+    ]
+    return valid[:8]
 
 
 def _as_float(raw: Any) -> float | None:

@@ -16,7 +16,7 @@ from .config import Config, Poi, Profile
 
 NUMERIC_TEMPLATE = """{instruction}
 
-Point of interest: {tag}. You should find: {description}.
+Point of interest: {tag}. You should find: {description}.{where}
 Expected unit: {unit}. Scale of this instrument: {min} to {max} {unit}.
 
 Answer only with the JSON requested:
@@ -29,7 +29,7 @@ Never guess a value you cannot see. A null with the right reason is a good answe
 
 STATE_TEMPLATE = """{instruction}
 
-Point of interest: {tag}. You should find: {description}.
+Point of interest: {tag}. You should find: {description}.{where}
 
 Answer only with the JSON requested:
 - value: one of {values}.
@@ -48,17 +48,22 @@ coordinates normalized to 0..1000 relative to the WHOLE input image (x first, y 
 GROUNDING = f"""
 Locate the object you inspected. {BOX_ORDER}
 If the target is absent or cannot be localized, return bbox_2d null. Never invent a box.
+Return other_boxes with one box, in the same format, per other object of the same kind
+in the photo that you did not inspect (a second gauge beside it); an empty list if none.
 The point-of-interest tag is supplied context, not evidence that you read a physical label.
 """
 
 
+def _box() -> dict[str, Any]:
+    return {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1000}, "minItems": 4, "maxItems": 4}
+
+
 def box_schema() -> dict[str, Any]:
-    return {
-        "anyOf": [
-            {"type": "null"},
-            {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1000}, "minItems": 4, "maxItems": 4},
-        ]
-    }
+    return {"anyOf": [{"type": "null"}, _box()]}
+
+
+def others_schema() -> dict[str, Any]:
+    return {"type": "array", "items": _box(), "maxItems": 8}
 
 
 @dataclass(frozen=True)
@@ -77,8 +82,9 @@ def numeric_schema(profile: Profile) -> dict[str, Any]:
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "evidence": {"type": "string"},
             "bbox_2d": box_schema(),
+            "other_boxes": others_schema(),
         },
-        "required": ["value", "unit", "status_reason", "confidence", "evidence", "bbox_2d"],
+        "required": ["value", "unit", "status_reason", "confidence", "evidence", "bbox_2d", "other_boxes"],
         "additionalProperties": False,
     }
 
@@ -92,10 +98,15 @@ def state_schema(profile: Profile) -> dict[str, Any]:
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "evidence": {"type": "string"},
             "bbox_2d": box_schema(),
+            "other_boxes": others_schema(),
         },
-        "required": ["value", "status_reason", "confidence", "evidence", "bbox_2d"],
+        "required": ["value", "status_reason", "confidence", "evidence", "bbox_2d", "other_boxes"],
         "additionalProperties": False,
     }
+
+
+def _where(poi: Poi) -> str:
+    return f"\nWhere to look: {poi.hint}" if poi.hint else ""
 
 
 def build_question(poi: Poi, profile: Profile) -> Question:
@@ -110,6 +121,7 @@ def build_question(poi: Poi, profile: Profile) -> Question:
             min=f"{poi.expect.min:g}",
             max=f"{poi.expect.max:g}",
             reasons=reasons,
+            where=_where(poi),
         )
         return Question(text + GROUNDING, numeric_schema(profile))
     text = STATE_TEMPLATE.format(
@@ -118,6 +130,7 @@ def build_question(poi: Poi, profile: Profile) -> Question:
         description=profile.description,
         values=", ".join(profile.values),
         reasons=reasons,
+        where=_where(poi),
     )
     return Question(text + GROUNDING, state_schema(profile))
 

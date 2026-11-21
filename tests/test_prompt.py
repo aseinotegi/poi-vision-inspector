@@ -8,8 +8,24 @@ def test_numeric_question_carries_the_poi_context(config):
     assert "PI-104" in q.instruction and "0 to 10 bar" in q.instruction
     assert q.schema["properties"]["status_reason"]["enum"] == ["lectura_valida", "no_legible", "no_encontrado"]
     assert q.schema["properties"]["value"]["type"] == ["number", "null"]
-    assert set(q.schema["required"]) == {"value", "unit", "status_reason", "confidence", "evidence", "bbox_2d"}
+    assert set(q.schema["required"]) == {
+        "value",
+        "unit",
+        "status_reason",
+        "confidence",
+        "evidence",
+        "bbox_2d",
+        "other_boxes",
+    }
     assert q.schema["properties"]["bbox_2d"]["anyOf"][1]["maxItems"] == 4
+    assert q.schema["properties"]["other_boxes"]["items"]["maxItems"] == 4
+    assert "Where to look" not in q.instruction
+
+
+def test_a_hint_says_which_object_when_there_are_several(config):
+    poi = config.pois["PI-104"].model_copy(update={"hint": "the larger gauge, on the right"})
+    q = build_question(poi, config.profiles["manometro"])
+    assert "Where to look: the larger gauge, on the right" in q.instruction
 
 
 def test_state_question_uses_the_profile_lists(config):

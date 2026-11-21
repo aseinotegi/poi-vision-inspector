@@ -164,3 +164,17 @@ def test_unknown_poi(config, scripted):
     inspector, _ = make(config, scripted)
     with pytest.raises(KeyError):
         inspector.inspect("PI-999", IMG)
+
+
+def test_other_objects_of_the_same_kind_are_kept_apart_from_the_inspected_one(config, scripted):
+    others = [[20, 300, 300, 700], [700, 850, 100, 150], [100, 150, 700, 850]]  # one good, one inverted, one repeated
+    inspector, _ = make(config, scripted, {**reading(6.8), "bbox_2d": [100, 150, 700, 850], "other_boxes": others})
+    result = inspector.inspect("PI-104", IMG)
+    assert result.bbox_2d == [100, 150, 700, 850] and result.other_boxes == [[20, 300, 300, 700]]
+    assert result.quality == GOOD
+
+
+def test_old_answers_without_other_boxes_still_count(config, scripted):
+    inspector, _ = make(config, scripted, reading(6.8))
+    result = inspector.inspect("PI-104", IMG)
+    assert result.other_boxes == [] and result.quality == GOOD

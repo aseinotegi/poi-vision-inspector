@@ -160,3 +160,5 @@ def test_gemini_answer_without_a_box_is_left_alone():
 
     assert json.loads(_box_back('{"value": null, "box_2d": null}')) == {"value": None, "bbox_2d": None}
     assert _box_back("not json") == "not json"
+    both = _box_back('{"box_2d": [304, 438, 917, 877], "other_boxes": [[380, 160, 790, 400]]}')
+    assert json.loads(both) == {"bbox_2d": [438, 304, 877, 917], "other_boxes": [[160, 380, 400, 790]]}

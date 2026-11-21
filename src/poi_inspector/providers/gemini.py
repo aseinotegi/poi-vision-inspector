@@ -34,11 +34,16 @@ def _box_back(text: str) -> str:
         return text  # the inspector says it is not valid JSON
     if not isinstance(data, dict) or "box_2d" not in data:
         return text
-    box = data.pop("box_2d")
-    if isinstance(box, list) and len(box) == 4:
-        box = [box[1], box[0], box[3], box[2]]
-    data["bbox_2d"] = box
+    data["bbox_2d"] = _xy(data.pop("box_2d"))
+    if isinstance(data.get("other_boxes"), list):
+        data["other_boxes"] = [_xy(box) for box in data["other_boxes"]]
     return json.dumps(data, ensure_ascii=False)
+
+
+def _xy(box: Any) -> Any:
+    if isinstance(box, list) and len(box) == 4:
+        return [box[1], box[0], box[3], box[2]]
+    return box
 
 
 def _gemini_schema(node: Any) -> Any:

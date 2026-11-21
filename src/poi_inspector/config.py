@@ -105,6 +105,7 @@ class Poi(Strict):
     tag: str  # name on the plant (P&ID tag), given to the model as context
     uns_topic: str
     expect: Expect | None = None
+    hint: str | None = None  # which object, when the photo shows more than one
 
     @field_validator("uns_topic")
     @classmethod
