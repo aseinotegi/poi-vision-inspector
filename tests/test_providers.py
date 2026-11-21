@@ -122,3 +122,41 @@ def test_replay_answers_by_image_hash_with_fallback():
     )
     assert json.loads(provider.ask(IMG, "image/png", "", {}).text) == {"value": 1}
     assert json.loads(provider.ask(b"other", "image/png", "", {}).text) == {"value": 0}
+
+
+class FakeGemini:
+    """Stands in for google.genai.Client: keeps the request, gives a fixed answer."""
+
+    def __init__(self, answer: str):
+        self.answer, self.seen = answer, {}
+        self.models = self
+
+    def generate_content(self, model, contents, config):
+        self.seen = {"instruction": contents[1], "schema": config.response_schema}
+        return type("Response", (), {"text": self.answer, "model_version": model})()
+
+
+def test_gemini_is_asked_for_its_own_box_order_and_answers_in_ours():
+    from poi_inspector.config import Expect, Poi, Profile
+    from poi_inspector.prompt import build_question
+    from poi_inspector.providers.gemini import GeminiProvider
+
+    profile = Profile(kind="numeric", description="a gauge", instruction="Read it.", reasons=["lectura_valida"])
+    poi = Poi(profile="m", tag="PI-1", uns_topic="a/b", expect=Expect(unit="bar", min=0, max=10))
+    question = build_question(poi, profile)
+    fake = FakeGemini('{"value": 5.4, "box_2d": [304, 438, 917, 877]}')
+    provider = GeminiProvider(ProviderConfig(kind="gemini", model="gemini-x"), client=fake)
+
+    answer = provider.ask(IMG, "image/jpeg", question.instruction, question.schema)
+
+    assert "[ymin, xmin, ymax, xmax]" in fake.seen["instruction"]
+    assert "bbox_2d" not in fake.seen["instruction"]
+    assert "box_2d" in fake.seen["schema"]["properties"] and "bbox_2d" not in fake.seen["schema"]["properties"]
+    assert json.loads(answer.text) == {"value": 5.4, "bbox_2d": [438, 304, 877, 917]}
+
+
+def test_gemini_answer_without_a_box_is_left_alone():
+    from poi_inspector.providers.gemini import _box_back
+
+    assert json.loads(_box_back('{"value": null, "box_2d": null}')) == {"value": None, "bbox_2d": None}
+    assert _box_back("not json") == "not json"

@@ -2,11 +2,43 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
 from ..config import ProviderConfig
+from ..prompt import BOX_ORDER
 from .base import RETRYABLE_STATUS, Answer, ProviderError, api_key
+
+# Gemini is trained to give boxes as box_2d [ymin, xmin, ymax, xmax]. Asked for another
+# order it mixes both from one answer to the next, so it is asked in its own and the
+# answer is turned back into bbox_2d [left, top, right, bottom].
+NATIVE_BOX_ORDER = """Return box_2d as [ymin, xmin, ymax, xmax],
+coordinates normalized to 0..1000 relative to the WHOLE input image (y first, x second)."""
+
+
+def _native_question(instruction: str, schema: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    if BOX_ORDER not in instruction or "bbox_2d" not in schema.get("properties", {}):
+        return instruction, schema
+    text = instruction.replace(BOX_ORDER, NATIVE_BOX_ORDER).replace("bbox_2d", "box_2d")
+    properties = {("box_2d" if k == "bbox_2d" else k): v for k, v in schema["properties"].items()}
+    required = ["box_2d" if k == "bbox_2d" else k for k in schema.get("required", [])]
+    return text, {**schema, "properties": properties, "required": required}
+
+
+def _box_back(text: str) -> str:
+    """box_2d [ymin, xmin, ymax, xmax] -> bbox_2d [left, top, right, bottom]."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return text  # the inspector says it is not valid JSON
+    if not isinstance(data, dict) or "box_2d" not in data:
+        return text
+    box = data.pop("box_2d")
+    if isinstance(box, list) and len(box) == 4:
+        box = [box[1], box[0], box[3], box[2]]
+    data["bbox_2d"] = box
+    return json.dumps(data, ensure_ascii=False)
 
 
 def _gemini_schema(node: Any) -> Any:
@@ -56,6 +88,7 @@ class GeminiProvider:
     def ask(self, image: bytes, mime: str, instruction: str, schema: dict[str, Any]) -> Answer:
         from google.genai import errors, types
 
+        instruction, schema = _native_question(instruction, schema)
         config = types.GenerateContentConfig(
             temperature=self._cfg.temperature,
             response_mime_type="application/json",
@@ -70,7 +103,7 @@ class GeminiProvider:
         except OSError as exc:
             raise ProviderError(f"gemini not reachable: {exc}", retryable=True) from exc
         return Answer(
-            text=response.text or "",
+            text=_box_back(response.text or ""),
             model=getattr(response, "model_version", None) or self._cfg.model,
             latency_ms=int((time.monotonic() - start) * 1000),
         )

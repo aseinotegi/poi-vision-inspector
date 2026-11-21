@@ -40,9 +40,13 @@ If the object is not there, that is a finding: answer with the matching reason.
 If you cannot assess the state, return value null and status_reason no_legible.
 OK must mean correcto; an adverse finding must be NOK."""
 
-GROUNDING = """
-Locate the object you inspected. Return bbox_2d as [left, top, right, bottom],
-coordinates normalized to 0..1000 relative to the WHOLE input image (x first, y second).
+# The box as every result carries it. A provider whose model was trained on another
+# order (Gemini: box_2d, y first) asks in that order and converts the answer back.
+BOX_ORDER = """Return bbox_2d as [left, top, right, bottom],
+coordinates normalized to 0..1000 relative to the WHOLE input image (x first, y second)."""
+
+GROUNDING = f"""
+Locate the object you inspected. {BOX_ORDER}
 If the target is absent or cannot be localized, return bbox_2d null. Never invent a box.
 The point-of-interest tag is supplied context, not evidence that you read a physical label.
 """
