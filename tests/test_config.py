@@ -60,3 +60,12 @@ def test_where_the_model_runs_can_come_from_the_environment():
 
     config = load_config(CONFIG, environ={"POI_PROVIDER_URL": "http://ollama:11434", "POI_PROVIDER_MODEL": "gemma3"})
     assert (config.provider.url, config.provider.model) == ("http://ollama:11434", "gemma3")
+
+
+def test_a_trial_provider_from_the_environment():
+    from poi_inspector.config import load_config
+
+    config = load_config(CONFIG, environ={"POI_TRIAL_PROVIDER": "gemini", "POI_TRIAL_MODEL": "gemini-x"})
+    assert config.trial_provider.kind == "gemini" and config.trial_provider.model == "gemini-x"
+    assert config.trial_provider.api_key_env == "GEMINI_API_KEY" and config.trial_provider.retries == 1
+    assert load_config(CONFIG, environ={}).trial_provider is None

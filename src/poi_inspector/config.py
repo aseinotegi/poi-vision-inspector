@@ -6,6 +6,9 @@ Three blocks in one YAML file (see ``config/inspector.yaml``):
   OpenAI-compatible server) or a cloud one (Gemini). Swapped without touching code.
 * ``profiles``  what to look for and how to answer, per kind of object: a gauge
   returns a number, an extinguisher returns OK/NOK with a reason.
+* ``trial_provider`` (optional) another model for vision trials, the photos people
+  send on purpose: e.g. the robot's rounds answered from recorded readings and a
+  visitor's photo read by Gemini.
 * ``pois``      where the robot stops. Each point of interest says which profile
   applies there, what it should read (unit, range) and where the result goes in
   the Unified Namespace.
@@ -113,6 +116,7 @@ class Poi(Strict):
 
 class Config(Strict):
     provider: ProviderConfig
+    trial_provider: ProviderConfig | None = None
     profiles: dict[str, Profile]
     pois: dict[str, Poi]
 
@@ -139,6 +143,8 @@ def parse_config(raw: object) -> Config:
 
 # Deployment details that change per machine, not per plant: where the model runs.
 ENV_OVERRIDES = {"POI_PROVIDER_URL": "url", "POI_PROVIDER_MODEL": "model"}
+# And which model answers the trials, if not the same one (POI_TRIAL_PROVIDER=gemini).
+TRIAL_KEYS = {"gemini": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
 def load_config(path: str | Path, environ: dict[str, str] | None = None) -> Config:
@@ -150,4 +156,13 @@ def load_config(path: str | Path, environ: dict[str, str] | None = None) -> Conf
         for variable, key in ENV_OVERRIDES.items():
             if env.get(variable):
                 raw["provider"][key] = env[variable]
+    if isinstance(raw, dict) and env.get("POI_TRIAL_PROVIDER"):
+        kind = env["POI_TRIAL_PROVIDER"]
+        raw["trial_provider"] = {
+            "kind": kind,
+            "model": env.get("POI_TRIAL_MODEL", ""),
+            "url": env.get("POI_TRIAL_URL") or None,
+            "api_key_env": TRIAL_KEYS.get(kind),
+            "retries": int(env.get("POI_TRIAL_RETRIES", "1")),
+        }
     return parse_config(raw)

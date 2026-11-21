@@ -114,8 +114,10 @@ class InspectionService:
         max_photo_age_s: float = 45.0,
         clock: Callable[[], datetime] | None = None,
         trial_prefix: str = "planta1/ensayos/vision",
+        trial_inspector: Inspector | None = None,
     ) -> None:
         self._inspector = inspector
+        self._trial_inspector = trial_inspector or inspector
         self._publish = publish  # (topic, payload dict, retain) -> None
         self._client = client or httpx.Client(timeout=15)
         self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=100)
@@ -265,7 +267,8 @@ class InspectionService:
                     False,
                 )
             image, mime = load_image(photo, self._client)
-            result = self._inspector.inspect(poi_id, image, mime)
+            inspector = self._trial_inspector if trial else self._inspector
+            result = inspector.inspect(poi_id, image, mime)
         except (InspectionFailed, httpx.HTTPError, ValueError) as exc:
             log.error("%s %s: no inspection (%s)", poi_id, image_id, exc)
             self._failure(poi_id, poi, context, str(exc))
@@ -326,6 +329,9 @@ def describe(config, inspector: Inspector) -> dict[str, Any]:
         "retries": config.provider.retries,
         "timeout_s": config.provider.timeout_s,
         "think": config.provider.think,
+        "trial_provider": config.trial_provider.kind if config.trial_provider else config.provider.kind,
+        "trial_model": (config.trial_provider or config.provider).model
+        or (config.trial_provider or config.provider).kind,
         "profiles": {k: {"kind": v.kind, "description": v.description} for k, v in sorted(config.profiles.items())},
         "pois": pois,
     }
@@ -349,11 +355,13 @@ def main(config_path: str) -> int:
         client.publish(topic, json.dumps(payload, ensure_ascii=False, separators=(",", ":")), qos=1, retain=retain)
 
     trial_prefix = os.environ.get("TRIAL_TOPIC", "planta1/ensayos/vision").rstrip("/")
+    trials = Inspector(config, make_provider(config.trial_provider)) if config.trial_provider else None
     service = InspectionService(
         inspector,
         publish,
         max_photo_age_s=float(os.environ.get("MAX_PHOTO_AGE_S", "45")),
         trial_prefix=trial_prefix,
+        trial_inspector=trials,
     )
 
     def on_connect(c, userdata, flags, reason_code, properties) -> None:

@@ -130,7 +130,7 @@ pois:
 | `gemini` | nube de Google | `pip install ".[gemini]"`; la clave va en la variable que indica `api_key_env` |
 | `replay` | ningún sitio | Respuestas grabadas por hash de imagen: tests, CI y demos sin conexión |
 
-Dónde corre el modelo también puede venir del entorno (`POI_PROVIDER_URL`, `POI_PROVIDER_MODEL`), así que el mismo YAML vale en un portátil y en planta. El servicio MQTT lee `MQTT_HOST`, `MQTT_PORT` y, para un broker con usuarios y ACL, `MQTT_USERNAME` y `MQTT_PASSWORD`. Al conectarse publica, retenido en `<tema de estado>/config`, su modelo y el prompt y el esquema JSON exactos de cada punto de interés, para que cualquiera en el UNS vea qué se le pregunta al modelo. Cada inspección lleva en su traza la respuesta en bruto del modelo.
+Dónde corre el modelo también puede venir del entorno (`POI_PROVIDER_URL`, `POI_PROVIDER_MODEL`), así que el mismo YAML vale en un portátil y en planta. Los ensayos de visión (fotos enviadas a propósito a `<tema de ensayos>/foto`) puede contestarlos otro modelo: `trial_provider` en el YAML, o `POI_TRIAL_PROVIDER=gemini` y `POI_TRIAL_MODEL` desde el entorno; por ejemplo, las rondas del robot con lecturas grabadas y la foto de un visitante leída por Gemini. El servicio MQTT lee `MQTT_HOST`, `MQTT_PORT` y, para un broker con usuarios y ACL, `MQTT_USERNAME` y `MQTT_PASSWORD`. Al conectarse publica, retenido en `<tema de estado>/config`, su modelo y el prompt y el esquema JSON exactos de cada punto de interés, para que cualquiera en el UNS vea qué se le pregunta al modelo. Cada inspección lleva en su traza la respuesta en bruto del modelo.
 
 ## Cuánto fiarse de una respuesta
 

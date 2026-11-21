@@ -199,3 +199,15 @@ def test_the_configuration_is_published_with_the_exact_prompts_and_no_secrets(co
     assert poi["schema"]["type"] == "object"
     text = json.dumps(body)
     assert "api_key" not in text and "http" not in text
+
+
+def test_trials_can_be_answered_by_another_model(config, scripted):
+    sent = []
+    rounds = Inspector(config, scripted(), sleep=lambda s: None)  # the robot's model: never asked
+    trials = Inspector(config, scripted(answer(7.1)), sleep=lambda s: None)
+    service = InspectionService(
+        rounds, lambda t, p, r: sent.append((t, p, r)), clock=lambda: NOW, trial_inspector=trials
+    )
+    service.on_trial(trial_photo())
+    drain(service)
+    assert sent[-1][1]["state"] == "completada" and sent[-1][1]["value"] == 7.1

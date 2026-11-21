@@ -128,7 +128,7 @@ pois:
 | `gemini` | Google cloud | `pip install ".[gemini]"`, key in the variable named by `api_key_env` |
 | `replay` | nowhere | recorded answers by image hash: tests, CI, offline demos |
 
-Where the model runs can also come from the environment (`POI_PROVIDER_URL`, `POI_PROVIDER_MODEL`), so the same YAML works on a laptop and in a plant. The MQTT service reads `MQTT_HOST`, `MQTT_PORT` and, for a broker with users and ACLs, `MQTT_USERNAME` and `MQTT_PASSWORD`. On connect it publishes, retained on `<status topic>/config`, its model and the exact prompt and JSON schema of every point of interest, so anyone on the UNS can see what the model is asked. Every inspection carries the model's raw answer in its trace.
+Where the model runs can also come from the environment (`POI_PROVIDER_URL`, `POI_PROVIDER_MODEL`), so the same YAML works on a laptop and in a plant. Vision trials (photos sent on purpose to `<trial topic>/foto`) can be answered by another model: `trial_provider` in the YAML, or `POI_TRIAL_PROVIDER=gemini` and `POI_TRIAL_MODEL` from the environment, e.g. the robot's rounds from recorded readings and a visitor's photo read by Gemini. The MQTT service reads `MQTT_HOST`, `MQTT_PORT` and, for a broker with users and ACLs, `MQTT_USERNAME` and `MQTT_PASSWORD`. On connect it publishes, retained on `<status topic>/config`, its model and the exact prompt and JSON schema of every point of interest, so anyone on the UNS can see what the model is asked. Every inspection carries the model's raw answer in its trace.
 
 ## How much to trust an answer
 
